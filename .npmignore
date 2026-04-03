@@ -1,0 +1,27 @@
+# Source and tests
+src/
+tests/
+docs/
+
+# Development and local artifacts
+node_modules/
+.git/
+.vscode/
+.idea/
+coverage/
+.vitest/
+*.tsbuildinfo
+
+# Config and local files not needed in package
+tsconfig.json
+tsconfig.tsbuildinfo
+tsup.config.ts
+in.txt
+
+# Logs and env
+*.log
+.env
+.env.*
+
+# Misc
+.DS_Store

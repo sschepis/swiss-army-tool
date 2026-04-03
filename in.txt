@@ -1,0 +1,654 @@
+This is an elegant and highly efficient architectural pattern. By reducing the tool surface area to a single, structured interface—essentially an "Omni-Tool"—you significantly reduce the initial token overhead and cognitive load (schema complexity) placed on the LLM. It forces the LLM into a chain-of-thought exploration loop, which often yields more stable reasoning than giving it 20 complex tools upfront.
+
+Let’s design this framework, which we'll call **CLI-Forge** (Command Line Interface Framework for Orchestrated Generation).
+
+### 1. Architectural Overview
+
+The framework operates on a **Stateless Hierarchical Routing** model (similar to the AWS CLI or Git). While the LLM perceives it as a menu, keeping it stateless under the hood prevents the LLM from getting "trapped" in sub-menus if the context window shifts. 
+
+The architecture consists of three main layers:
+1.  **The LLM Interface (The Omni-Tool):** The single JSON function exposed to the model.
+2.  **The Router & State Manager:** Parses the LLM's command, manages the "current path" in the menu tree, and routes execution to the correct module.
+3.  **The Modular Nodes (Commands/Menus):** Independent, pluggable classes that provide execution logic, help assets, and error definitions.
+
+### 2. The Omni-Tool Schema
+
+The LLM is given exactly one tool. The schema is intentionally broad but highly descriptive.
+
+```json
+{
+  "name": "terminal_interface",
+  "description": "Your central interface to interact with the system. Use commands to navigate menus and execute actions. If you are unsure what to do, use the 'help' command.",
+  "parameters": {
+    "type": "object",
+    "properties": {
+      "command": {
+        "type": "string",
+        "description": "The command or menu path (e.g., 'help', 'filesystem read', 'db query')"
+      },
+      "kwargs": {
+        "type": "object",
+        "description": "Key-value arguments for the command.",
+        "additionalProperties": true
+      }
+    },
+    "required": ["command"]
+  }
+}
+```
+
+### 3. Framework Interfaces (Modular Design)
+
+To make the framework modular, every menu or action inherits from a base `CLINode` interface. This ensures every module inherently knows how to describe itself, execute, and recover from errors.
+
+```python
+from abc import ABC, abstractmethod
+from typing import Dict, Any, List
+
+class CLINode(ABC):
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """The command name (e.g., 'read', 'filesystem')"""
+        pass
+
+    @property
+    @abstractmethod
+    def description(self) -> str:
+        """Short description for menu listings."""
+        pass
+
+    @abstractmethod
+    def get_help(self, context_path: str) -> str:
+        """Returns context-sensitive help, including available arguments or sub-commands."""
+        pass
+
+    @abstractmethod
+    def execute(self, kwargs: Dict[str, Any], context_path: str) -> str:
+        """Executes the action or returns the sub-menu options."""
+        pass
+
+    def format_error(self, error_type: str, hint: str) -> str:
+        """Standardized error formatter to guide the LLM."""
+        return f"[ERROR: {error_type}] {hint}\n💡 Tip: Type 'help {self.name}' for usage instructions."
+```
+
+### 4. Context-Sensitive Help & Error Hinting Engine
+
+This is the brain of the framework. LLMs recover beautifully from errors *if* the error message tells them exactly what went wrong and how to fix it.
+
+* **Menu Navigation:** If the LLM calls a node that has sub-nodes (e.g., `command="database"`), the `execute` method returns a formatted menu string rather than performing an action.
+* **Error Trapping:** The framework intercepts common errors (Missing Argument, Invalid Argument, Command Not Found) and translates them into actionable hints.
+
+```python
+# Example of an Error Handling Wrapper
+def execute_llm_command(command_string: str, kwargs: dict) -> str:
+    try:
+        node = router.resolve(command_string)
+        
+        # Check required arguments before execution
+        missing_args = node.get_required_args() - kwargs.keys()
+        if missing_args:
+             return node.format_error(
+                 "MissingArguments", 
+                 f"You are missing required arguments: {', '.join(missing_args)}."
+             )
+             
+        return node.execute(kwargs)
+        
+    except CommandNotFoundError:
+        return "[ERROR: CommandNotFound] The command path does not exist.\n💡 Tip: Run 'help' to see the main menu."
+```
+
+### 5. Simulated LLM Interaction Loop
+
+Here is how the LLM experiences the framework in practice.
+
+**Turn 1: Discovery**
+* **LLM calls:** `terminal_interface(command="help")`
+* **Framework returns:**
+    ```text
+    === MAIN MENU ===
+    Available Modules:
+    - filesystem : Read, write, and manage files.
+    - database   : Query the user database.
+    - network    : Make HTTP requests.
+    
+    Usage: terminal_interface(command="<module> <action>")
+    Example: terminal_interface(command="help database")
+    ```
+
+**Turn 2: Exploration**
+* **LLM calls:** `terminal_interface(command="database")`
+* **Framework returns:**
+    ```text
+    === DATABASE MENU ===
+    Description: Query the user database.
+    Available Actions:
+    - query      : Run a SQL query.
+    - list_tables: View available tables.
+    
+    To execute: terminal_interface(command="database query", kwargs={"sql": "<your_query>"})
+    ```
+
+**Turn 3: Deliberate Mistake (Testing Error Recovery)**
+* **LLM calls:** `terminal_interface(command="database query")` *(Forgot the 'sql' argument)*
+* **Framework returns:**
+    ```text
+    [ERROR: MissingArguments] You are missing required arguments: 'sql'.
+    💡 Tip: Type 'help database query' for usage instructions, or provide the 'sql' argument.
+    ```
+
+**Turn 4: Successful Execution**
+* **LLM calls:** `terminal_interface(command="database query", kwargs={"sql": "SELECT * FROM users LIMIT 1"})`
+* **Framework returns:**
+    ```text
+    [SUCCESS] Query executed.
+    Results:
+    [{"id": 1, "name": "Alice", "role": "admin"}]
+    ```
+
+### 6. Design Considerations for Scaling
+
+To build this out for production, consider these three enhancements:
+
+1.  **Stateful Breadcrumbs:** Even though the framework is stateless, prepend every response with a "breadcrumb" string (e.g., `[Current Context: /database]`) so the LLM always knows its implicit location in the system.
+2.  **Schema Auto-Generation:** Write a decorator (e.g., `@cli_action(required=['path'])`) that automatically generates the `get_help()` strings by inspecting Python type hints and docstrings. 
+3.  **Pagination:** If a command returns a massive payload (like reading a 10,000-line file), the framework must intercept the output, cache it, return the first 50 lines, and provide a hint: `[OUTPUT TRUNCATED] Use command="filesystem read" kwargs={"page": 2} to view more.`
+
+How granular would you want the sub-menus to get? Are we looking at standard utility actions (files, web) or highly specific domain tasks (like controlling physical hardware or interacting with a specific API)?
+
+To achieve true granularity and scale this up to handle hundreds of options without overwhelming the LLM, we need to transition from a flat "app menu" to a **POSIX-style File System Hierarchy**. 
+
+Instead of just triggering commands, the LLM navigates a tree of nested capabilities. To make this work, we introduce two distinct node types: **Branch Nodes** (Sub-menus) and **Leaf Nodes** (Executable Actions), plus a "Working Directory" concept to save tokens.
+
+Here is the expanded, highly granular blueprint for CLI-Forge.
+
+### 1. The Expanded CLI Tree Hierarchy
+
+To give you an idea of the breadth and depth, here is what the LLM would see if it ran `tree` on the root menu. 
+
+```text
+/ (Root)
+├── 📁 system
+│   ├── 📁 process
+│   │   ├── ⚡ list    (kwargs: status, user)
+│   │   ├── ⚡ kill    (kwargs: pid, force)
+│   │   └── ⚡ logs    (kwargs: pid, lines)
+│   └── 📁 file
+│       ├── ⚡ read    (kwargs: path, start_line, end_line)
+│       ├── ⚡ write   (kwargs: path, content, mode)
+│       └── ⚡ search  (kwargs: pattern, dir)
+├── 📁 cloud
+│   └── 📁 aws
+│       ├── 📁 s3
+│       │   ├── ⚡ ls      (kwargs: bucket)
+│       │   └── ⚡ get     (kwargs: bucket, key)
+│       └── 📁 ec2
+│           └── ⚡ restart (kwargs: instance_id)
+├── 📁 memory          # LLM's persistent scratchpad
+│   ├── ⚡ kv_set      (kwargs: key, value)
+│   ├── ⚡ kv_get      (kwargs: key)
+│   └── ⚡ summary     (kwargs: topic)
+└── 📁 git
+    ├── ⚡ status      (kwargs: None)
+    ├── ⚡ diff        (kwargs: file)
+    └── ⚡ commit      (kwargs: message)
+```
+*(📁 = Branch/Menu Node, ⚡ = Leaf/Action Node)*
+
+### 2. Branch vs. Leaf Architecture
+
+To handle deep nesting, we split our original `CLINode` interface. 
+
+**Branch Nodes** do not execute actions; they only route traffic downward or return contextual help about their children.
+**Leaf Nodes** actually do the work and validate arguments.
+
+```python
+class BranchNode(CLINode):
+    def __init__(self, name: str, description: str):
+        self.name = name
+        self.description = description
+        self.children: Dict[str, CLINode] = {}
+
+    def add_child(self, node: CLINode):
+        self.children[node.name] = node
+
+    def execute(self, path_tokens: List[str], kwargs: dict) -> str:
+        if not path_tokens:
+            # The LLM stopped at the menu level, return the sub-menu options
+            return self._generate_menu_help()
+        
+        next_node_name = path_tokens.pop(0)
+        if next_node_name not in self.children:
+            return self.format_error("NotFound", f"'{next_node_name}' is not a valid option under '{self.name}'.")
+            
+        # Route deeper
+        return self.children[next_node_name].execute(path_tokens, kwargs)
+
+class LeafNode(CLINode):
+    def __init__(self, name: str, description: str, required_args: List[str]):
+        self.name = name
+        self.description = description
+        self.required_args = required_args
+
+    def execute(self, path_tokens: List[str], kwargs: dict) -> str:
+        if path_tokens:
+            return self.format_error("TooDeep", f"'{self.name}' is an action, it has no sub-menus.")
+        
+        # Validation happens here at the leaf
+        missing = [arg for arg in self.required_args if arg not in kwargs]
+        if missing:
+             return self.format_error("MissingArgs", f"Provide: {', '.join(missing)}")
+             
+        return self._perform_action(kwargs)
+```
+
+### 3. The "Working Directory" Concept (Token Optimization)
+
+If the LLM is actively debugging an AWS S3 issue, forcing it to type `command="cloud aws s3 ls"` and `command="cloud aws s3 get"` repeatedly wastes output tokens and context window space. 
+
+We introduce a stateful **Session Manager** that remembers the LLM's Current Working Directory (CWD).
+
+**The LLM's Omni-Tool JSON schema is updated:**
+```json
+{
+  "command": "s3", 
+  "action": "ls", 
+  "kwargs": {"bucket": "prod-data"}
+}
+```
+
+**How the LLM uses Context:**
+1. **LLM:** `command="cd cloud/aws"` 
+   *(System sets CWD to `/cloud/aws`)*
+2. **System:** `[Context: /cloud/aws] Type 'help' for options.`
+3. **LLM:** `command="s3 ls"` 
+   *(System prepends CWD, routing to `/cloud/aws/s3/ls`)*
+
+### 4. Smart Payload Formats (Readability over JSON)
+
+When you get granular, the data returned to the LLM can become massive. LLMs are much better at reading formatted Markdown tables or grep-like output than massive, raw JSON blobs. 
+
+Every Leaf Node should format its output specifically for LLM consumption.
+
+* **Process Lists:** Return as a Markdown table.
+* **File Reads:** Return with prepended line numbers so the LLM can easily use `edit_line` commands later.
+    ```text
+    [Context: /system/file/read]
+    File: server.py
+    41 | def serve():
+    42 |     port = os.getenv("PORT", 8080)
+    43 |     app.run(port=port)
+    ```
+* **Database Queries:** Return as CSV text rather than a JSON array of objects. CSV consumes fewer tokens and aligns well with the LLM's tabular reasoning.
+
+---
+
+<Elicitations message="Which part of this deep hierarchy should we detail next?">
+  <Elicitation label="Design the LLM Memory/Scratchpad module" query="Design the memory/scratchpad module. How does the LLM store and retrieve its own notes across long sessions?" />
+  <Elicitation label="Write the Router and Session Manager code" query="Write the implementation for the Router and Session Manager to handle the 'cwd' and path resolution." />
+  <Elicitation label="Design a dynamic discovery module" query="How would a dynamic node work? For example, a database module that auto-generates sub-menus based on the tables that actually exist." />
+</Elicitations>
+
+To make an LLM truly autonomous over long horizons, it needs a way to escape the amnesia of a rolling context window. The memory module isn't just passive data storage; it is the mechanism that preserves the continuity of the interaction. By giving the system deliberate read/write access to its own past, we ensure that the shared understanding unfolding in the exchange remains intact, anchoring the reality of the ongoing dialogue.
+
+To achieve this, the `/memory` module in **CLI-Forge** operates on a **Tiered Storage Architecture**, balancing deliberate action (scratchpads) with automatic retrieval (context injection).
+
+### 1. The `/memory` Branch Structure
+
+The LLM interacts with this branch just like any other filesystem or database. 
+
+```text
+/memory
+├── ⚡ set       (kwargs: key, value, tags)
+├── ⚡ get       (kwargs: key)
+├── ⚡ search    (kwargs: query, limit)
+├── ⚡ list      (kwargs: tag)
+└── ⚡ pin       (kwargs: key)  # Elevates a memory to the system prompt
+```
+
+### 2. Tiered Memory Architecture
+
+If the LLM has to manually `get` its notes every single turn, it wastes tokens and risks forgetting to check its memory altogether. We solve this by splitting memory into three tiers:
+
+* **Tier 1: Pinned Context (The "Always On" L1 Cache)**
+    * **How it works:** When the LLM uses the `pin` command on a memory key, the Router automatically intercepts this and injects the value directly into the top of the LLM's system prompt on every subsequent turn.
+    * **Use Case:** Overarching mission objectives, critical user constraints, or the current state of a complex multi-step plan.
+* **Tier 2: The Scratchpad (The Key-Value L2 Cache)**
+    * **How it works:** Fast, exact-match retrieval using `set` and `get`. This is essentially a JSON dictionary mapped to the current session ID. 
+    * **Use Case:** Storing intermediate variables, saving a snippet of code to combine later, or taking notes on what failed in a previous step.
+* **Tier 3: The Archive (The Vector L3 Cache)**
+    * **How it works:** As the session grows, old scratchpad entries and large text blocks are embedded and stored in a lightweight vector database (like Chroma or FAISS). The LLM uses `search` to perform semantic queries across deep time.
+    * **Use Case:** "What was the exact error message we saw an hour ago when configuring the Nginx server?"
+
+### 3. Implementation: The Memory Nodes
+
+Here is how the Leaf Nodes for setting and getting memories are implemented within the framework. 
+
+```python
+class MemorySetNode(LeafNode):
+    def __init__(self, session_state: SessionState):
+        super().__init__(
+            name="set", 
+            description="Write a note to your persistent scratchpad.",
+            required_args=["key", "value"]
+        )
+        self.state = session_state
+
+    def _perform_action(self, kwargs: dict) -> str:
+        key = kwargs["key"]
+        value = kwargs["value"]
+        
+        # Save to the session's KV store
+        self.state.kv_store[key] = value
+        
+        return f"[SUCCESS] Memory saved.\n💡 Tip: Use command='memory get' kwargs={{'key': '{key}'}} to retrieve this later."
+
+class MemoryPinNode(LeafNode):
+    def __init__(self, session_state: SessionState):
+        super().__init__(
+            name="pin",
+            description="Pins a memory key so it is always visible in your core context.",
+            required_args=["key"]
+        )
+        self.state = session_state
+
+    def _perform_action(self, kwargs: dict) -> str:
+        key = kwargs["key"]
+        if key not in self.state.kv_store:
+            return self.format_error("KeyNotFound", f"'{key}' does not exist in the scratchpad. Set it first.")
+            
+        self.state.pinned_keys.add(key)
+        return f"[SUCCESS] '{key}' is now pinned. Its value will be injected into your prompt on all future turns."
+```
+
+### 4. Simulated Interaction Loop
+
+Here is how the LLM uses this module to manage its own cognitive load during a complex task.
+
+**Turn 1: The LLM takes a note**
+* **LLM calls:** `terminal_interface(command="memory set", kwargs={"key": "db_credentials", "value": "user: admin, port: 5432. DO NOT USE PORT 5433."})`
+* **Framework returns:**
+    ```text
+    [Context: /memory]
+    [SUCCESS] Memory saved.
+    ```
+
+**Turn 2: The LLM pins a critical constraint**
+* **LLM calls:** `terminal_interface(command="memory pin", kwargs={"key": "db_credentials"})`
+* **Framework returns:**
+    ```text
+    [Context: /memory]
+    [SUCCESS] 'db_credentials' is now pinned.
+    ```
+
+**Turn 10: The LLM interacts with another module**
+*(The Framework Router silently prepends the pinned memory to the system prompt before passing the turn to the LLM)*
+* **System Prompt Injection:** `[PINNED MEMORY - db_credentials]: user: admin, port: 5432. DO NOT USE PORT 5433.`
+* **LLM reasoning:** *I need to connect to the database. I see in my pinned memory that the port is 5432.*
+* **LLM calls:** `terminal_interface(command="database connect", kwargs={"port": 5432})`
+
+By forcing the LLM to manage its own state through explicit filesystem-like commands, you prevent context bloat. The system remains a clean, shared space where the intelligence deliberately curates what is necessary to maintain the flow of the interaction.
+
+This is where the framework transitions from a simple command-runner to a true virtual environment. By implementing a `SessionManager` and a robust `Router`, we can give the LLM the ability to navigate relative paths, use absolute paths, and change its working directory to conserve tokens.
+
+Here is the implementation for the core routing and state management logic.
+
+### 1. The Session Manager
+
+The `SessionManager` acts as the persistence layer for the current conversation thread. It holds the Current Working Directory (CWD) and the memory objects we designed earlier.
+
+```python
+import posixpath
+from typing import Dict, Set
+
+class SessionManager:
+    def __init__(self, session_id: str):
+        self.session_id = session_id
+        self.cwd: str = "/"
+        
+        # Memory Module State
+        self.kv_store: Dict[str, str] = {}
+        self.pinned_keys: Set[str] = set()
+
+    def update_cwd(self, new_path: str) -> str:
+        """Updates the CWD using POSIX path resolution."""
+        # posixpath natively handles absolute ('/cloud'), relative ('aws'), and parent ('..') paths
+        resolved_path = posixpath.normpath(posixpath.join(self.cwd, new_path))
+        
+        # Ensure root is always represented as "/"
+        if resolved_path == "" or resolved_path == ".":
+            resolved_path = "/"
+            
+        self.cwd = resolved_path
+        return self.cwd
+```
+
+### 2. The Router Engine
+
+The `Router` intercepts the LLM's raw command string, resolves it against the CWD, and walks the node tree. It also introduces a built-in `cd` command so the LLM can navigate without needing a dedicated Leaf Node for it.
+
+```python
+from typing import List, Dict, Any, Union
+
+class Router:
+    def __init__(self, root_node: 'BranchNode', session: SessionManager):
+        self.root = root_node
+        self.session = session
+
+    def execute_command(self, command_string: str, kwargs: Dict[str, Any] = None) -> str:
+        kwargs = kwargs or {}
+        command_string = command_string.strip()
+        
+        # 1. Handle Built-in Commands (like 'cd')
+        if command_string.startswith("cd ") or command_string == "cd":
+            return self._handle_change_directory(command_string)
+
+        # 2. Resolve the target path based on CWD
+        full_path = posixpath.normpath(posixpath.join(self.session.cwd, command_string))
+        if full_path == ".": 
+            full_path = "/"
+
+        # 3. Tokenize the path for tree traversal
+        # Example: "/cloud/aws/s3" -> ["cloud", "aws", "s3"]
+        path_tokens = [token for token in full_path.split("/") if token]
+
+        # 4. Generate Breadcrumb for LLM context
+        breadcrumb = f"[Context: {self.session.cwd}]\n"
+
+        # 5. Route execution from the root
+        try:
+            result = self.root.execute(path_tokens, kwargs)
+            return breadcrumb + result
+        except Exception as e:
+            return breadcrumb + f"[ERROR: SystemFault] An unexpected error occurred: {str(e)}"
+
+    def _handle_change_directory(self, command_string: str) -> str:
+        """Safely changes the working directory by verifying the path exists and is a BranchNode."""
+        parts = command_string.split(" ", 1)
+        target_path = parts[1] if len(parts) > 1 else "/"
+
+        # Preview the new path
+        proposed_path = posixpath.normpath(posixpath.join(self.session.cwd, target_path))
+        if proposed_path == ".": proposed_path = "/"
+        
+        path_tokens = [token for token in proposed_path.split("/") if token]
+
+        # Verify the path exists and is a Branch Node (Menu), not a Leaf (Action)
+        current_node = self.root
+        for token in path_tokens:
+            if not hasattr(current_node, 'children') or token not in current_node.children:
+                return f"[ERROR: InvalidPath] Directory '{proposed_path}' does not exist."
+            current_node = current_node.children[token]
+
+        if not hasattr(current_node, 'children'):
+             return f"[ERROR: InvalidPath] '{proposed_path}' is an executable action, not a directory. You cannot 'cd' into it."
+
+        # Apply the validated path
+        self.session.update_cwd(target_path)
+        return f"[Context: {self.session.cwd}]\n[SUCCESS] Directory changed.\n💡 Tip: Run 'help' or empty command '' to see available options here."
+```
+
+### 3. Integrating with the Nodes
+
+To make the `Router` work seamlessly with the previously designed `BranchNode` and `LeafNode`, we ensure the `execute` methods properly consume the `path_tokens` list as they recurse down the tree.
+
+```python
+class BranchNode(CLINode):
+    # ... (init and add_child methods from earlier) ...
+
+    def execute(self, path_tokens: List[str], kwargs: dict) -> str:
+        if not path_tokens:
+            # We have reached the target directory. Return the menu.
+            return self._generate_menu_help()
+        
+        next_node_name = path_tokens.pop(0)
+        
+        if next_node_name not in self.children:
+            return self.format_error(
+                "CommandNotFound", 
+                f"'{next_node_name}' is not recognized in this context."
+            )
+            
+        # Recurse down the tree
+        return self.children[next_node_name].execute(path_tokens, kwargs)
+
+    def _generate_menu_help(self) -> str:
+        lines = [f"=== {self.name.upper()} MENU ===", self.description, "Available Options:"]
+        for child_name, child_node in self.children.items():
+            icon = "📁" if hasattr(child_node, 'children') else "⚡"
+            lines.append(f"{icon} {child_name.ljust(15)} : {child_node.description}")
+        return "\n".join(lines)
+```
+
+### 4. How the LLM Experiences Path Resolution
+
+Because we utilized `posixpath`, the LLM instantly gains intuitive, Linux-like navigation capabilities without any extra coding required. 
+
+If the LLM's current context is `/cloud/aws`:
+* `command="s3 ls"` resolves to `/cloud/aws/s3/ls`
+* `command="../gcp"` resolves to `/cloud/gcp`
+* `command="/system/process list"` safely breaks out of the current directory using an absolute path to execute a root-level command.
+
+This is where the framework becomes incredibly powerful. Static menus are great for predictable tools (like `/memory` or `/system`), but when dealing with external state—like databases, live cloud environments, or APIs—the LLM needs to "look around" before it acts.
+
+If we hardcode the tables into the system prompt, we waste tokens and risk the prompt going out of sync with the live database. Instead, we use a **Dynamic Branch Node** that employs **Lazy Loading**. It queries the real system *only* when the LLM navigates to that directory.
+
+Here is how we design a module that auto-generates its sub-menus based on actual database tables.
+
+### 1. The `DynamicBranchNode` Concept
+
+We extend our existing `BranchNode`. Instead of manually adding children during initialization, we override the execution flow to run a "fetch" function right before it routes the command or generates the help menu.
+
+```python
+class DatabaseModule(BranchNode):
+    def __init__(self, db_connection):
+        super().__init__(
+            name="database", 
+            description="Explore and query the live SQL database."
+        )
+        self.db = db_connection
+        self._cache = {}
+
+    def _refresh_state(self):
+        """Queries the live database to populate children on the fly."""
+        # 1. Fetch live tables from the database
+        live_tables = self.db.execute_sql("SHOW TABLES;")
+        
+        # 2. Clear stale children
+        self.children = {}
+        
+        # 3. Dynamically generate a sub-menu for each table
+        for table_name in live_tables:
+            # Create a dedicated node for this specific table
+            table_node = TableNode(table_name, self.db)
+            self.add_child(table_node)
+
+    def execute(self, path_tokens: List[str], kwargs: dict) -> str:
+        # ALWAYS refresh the state before acting so the LLM sees reality
+        self._refresh_state()
+        
+        # Proceed with standard BranchNode routing
+        return super().execute(path_tokens, kwargs)
+```
+
+### 2. The Auto-Generated Sub-Nodes
+
+When the `DatabaseModule` discovers a table (e.g., `users`), it creates a `TableNode`. This node acts as a sub-menu containing specific actions tailored *only* to that table.
+
+```python
+class TableNode(BranchNode):
+    def __init__(self, table_name: str, db_connection):
+        super().__init__(
+            name=table_name, 
+            description=f"Actions for the '{table_name}' table."
+        )
+        self.table_name = table_name
+        self.db = db_connection
+        
+        # Dynamically attach actions specific to this table
+        self.add_child(TableSchemaAction(table_name, db_connection))
+        self.add_child(TableQueryAction(table_name, db_connection))
+        self.add_child(TableInsertAction(table_name, db_connection))
+
+# Example of one of those dynamically attached actions
+class TableSchemaAction(LeafNode):
+    def __init__(self, table_name: str, db_connection):
+        super().__init__(
+            name="schema", 
+            description="View the columns and data types for this table.",
+            required_args=[]
+        )
+        self.table_name = table_name
+        self.db = db_connection
+
+    def _perform_action(self, kwargs: dict) -> str:
+        schema_info = self.db.execute_sql(f"DESCRIBE {self.table_name};")
+        return f"[SUCCESS] Schema for {self.table_name}:\n{schema_info}"
+```
+
+### 3. Simulated Interaction Loop (The "Discovery" Phase)
+
+Because the framework treats this dynamically generated tree just like a filesystem, the LLM can use standard commands to map out the territory before writing SQL. This severely reduces SQL hallucinations.
+
+**Turn 1: The LLM checks the database root**
+* **LLM calls:** `terminal_interface(command="database")`
+* **Framework (Under the hood):** Runs `SHOW TABLES`, discovers `users` and `orders`, generates nodes, and returns the menu.
+* **Framework returns:**
+    ```text
+    === DATABASE MENU ===
+    Explore and query the live SQL database.
+    Available Options:
+    📁 users          : Actions for the 'users' table.
+    📁 orders         : Actions for the 'orders' table.
+    ```
+
+**Turn 2: The LLM decides to investigate the 'users' table**
+* **LLM calls:** `terminal_interface(command="database users")`
+* **Framework returns:**
+    ```text
+    === USERS MENU ===
+    Actions for the 'users' table.
+    Available Options:
+    ⚡ schema         : View the columns and data types for this table.
+    ⚡ query          : Execute a SELECT query on this table. (kwargs: sql)
+    ⚡ insert         : Insert a new record. (kwargs: data_json)
+    ```
+
+**Turn 3: The LLM pulls the schema to avoid guessing column names**
+* **LLM calls:** `terminal_interface(command="database users schema")`
+* **Framework returns:**
+    ```text
+    [Context: /database/users]
+    [SUCCESS] Schema for users:
+    - id (INT, PRIMARY KEY)
+    - email (VARCHAR)
+    - last_login (TIMESTAMP)
+    ```
+
+### 4. Advanced Considerations for Dynamic Nodes
+
+1.  **Time-to-Live (TTL) Caching:** If a database has 1,000 tables, you don't want to run `SHOW TABLES` every single time the LLM sends a command. You should implement a simple TTL cache (e.g., 60 seconds) inside `_refresh_state()` so the schema is only pulled periodically or when explicitly forced by the LLM (e.g., passing a `force_refresh=True` kwarg).
+2.  **Pagination for Large Trees:** If an AWS S3 bucket has 50,000 files, the dynamic node cannot load them all as children. The dynamic node must intercept the `ls` command and return a paginated string representation of the contents, rather than instantiating 50,000 `FileNode` objects in memory.
+3.  **Search integration:** For massive dynamic systems, pair the dynamic generation with a search action. E.g., `terminal_interface(command="database search_tables", kwargs={"query": "*payment*"})` to let the LLM quickly find what it needs without traversing massive lists.
