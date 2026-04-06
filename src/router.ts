@@ -73,6 +73,13 @@ export class Router {
     command: string,
     kwargs: Record<string, unknown> = {},
   ): Promise<string> {
+    // Guard against undefined/null command (e.g. malformed LLM tool arguments)
+    if (command == null || typeof command !== "string") {
+      return this.wrap(
+        formatError("InvalidInput", "No command provided. Use 'help' to see available commands."),
+      );
+    }
+
     this.debug(`execute: command="${command}", kwargs=${JSON.stringify(kwargs)}`);
     const startTime = Date.now();
 
