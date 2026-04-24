@@ -1,6 +1,6 @@
 {
   "name": "@sschepis/swiss-army-tool",
-  "version": "0.1.2",
+  "version": "0.1.4",
   "description": "A single-tool LLM interface framework with hierarchical command routing",
   "homepage": "https://github.com/sschepis/swiss-army-tool#readme",
   "bugs": {
@@ -51,5 +51,8 @@
     "tsup": "^8.5.1",
     "typescript": "^6.0.2",
     "vitest": "^4.1.2"
+  },
+  "dependencies": {
+    "@sschepis/swiss-army-tool": "^0.1.3"
   }
 }

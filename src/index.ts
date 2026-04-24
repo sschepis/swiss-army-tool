@@ -17,6 +17,21 @@ export type { LeafOptions } from "./builder.js";
 // Utilities
 export { createMemoryModule } from "./memory.js";
 export { generateToolSchema } from "./schema.js";
+
+// Session notes (auto-captured command log)
+export {
+  SessionNotes,
+  createNotesMiddleware,
+  createNotesModule,
+} from "./notes.js";
+export type { NoteEntry, SessionNotesOptions } from "./notes.js";
+
+// Shell redirect middleware
+export {
+  STANDARD_REDIRECTS,
+  createRedirectMiddleware,
+} from "./redirects.js";
+export type { RedirectRule, RedirectMiddlewareOptions } from "./redirects.js";
 export { table, lineNumbered, truncate, csv, prettyJson, digest } from "./formatter.js";
 
 // Testing utilities
