@@ -89,8 +89,12 @@ describe("Schema auto-generation (E2)", () => {
 
   it("includes module listing when root is provided", () => {
     const root = TreeBuilder.create("root", "Main")
-      .branch("database", "Query the database", () => {})
-      .branch("files", "File operations", () => {})
+      .branch("database", "Query the database", (b) => {
+        b.leaf("query", "run query", { sql: { type: "string" } }, () => "ok");
+      })
+      .branch("files", "File operations", (b) => {
+        b.leaf("read", "read file", { path: { type: "string" } }, () => "ok");
+      })
       .build();
 
     const schema = generateToolSchema({ root });
