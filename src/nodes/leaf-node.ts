@@ -144,9 +144,10 @@ export class LeafNode extends CLINode {
 
     const missing = this.requiredArgs.filter((arg) => !(arg in resolvedKwargs));
     if (missing.length > 0) {
+      const example = Object.fromEntries(this.requiredArgs.map((a) => [a, `<${a}>`]));
       return this.formatError(
         "MissingArguments",
-        `You are missing required arguments: ${missing.join(", ")}.`,
+        `You are missing required arguments: ${missing.join(", ")}. Retry with kwargs=${JSON.stringify(example)}`,
       );
     }
 
