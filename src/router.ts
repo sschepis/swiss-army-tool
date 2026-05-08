@@ -46,6 +46,11 @@ export class Router {
     this.logger = options?.logger ?? console.debug;
   }
 
+  /** The root node of the command tree. */
+  getRoot(): BranchNode {
+    return this.root;
+  }
+
   private debug(message: string): void {
     if (this.debugMode) {
       this.logger(`[swiss-army-tool] ${message}`);

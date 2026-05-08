@@ -169,6 +169,8 @@ export class SessionNotes {
  * each tool response.
  */
 export function createNotesMiddleware(notes: SessionNotes): Middleware {
+  let commandsSinceFullFooter = 0;
+
   return async (ctx, next) => {
     const isSkip = notes.shouldSkip(ctx.command);
 
@@ -178,7 +180,12 @@ export function createNotesMiddleware(notes: SessionNotes): Middleware {
 
     if (!isSkip) {
       notes.record(ctx.command, ctx.kwargs, response, durationMs);
-      return response + notes.footer();
+      commandsSinceFullFooter++;
+      if (commandsSinceFullFooter >= 5) {
+        commandsSinceFullFooter = 0;
+        return response + notes.footer();
+      }
+      return response + `\n\n[Session: ${notes.size()} commands]`;
     }
 
     return response;

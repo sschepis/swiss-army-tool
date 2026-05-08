@@ -7,41 +7,47 @@ const DEFAULT_NAME = "terminal_interface";
 const DEFAULT_DESCRIPTION =
   "Your central interface to interact with the system. Use commands to navigate menus and execute actions. If you are unsure what to do, use the 'help' command.";
 
-function collectLeafSignatures(node: CLINode, prefix: string): string[] {
-  if (node instanceof LeafNode) {
-    const args = node.requiredArgs;
-    const sig = args.length > 0 ? ` (kwargs: {${args.join(", ")}})` : "";
-    return [`  ${prefix}${sig} — ${node.description}`];
-  }
-  if (node.isBranch()) {
-    const branch = node as BranchNode;
-    const lines: string[] = [];
-    for (const [, child] of branch.children) {
-      lines.push(...collectLeafSignatures(child, `${prefix}/${child.name}`));
+function collectBranchSummaries(root: BranchNode): string[] {
+  const lines: string[] = [];
+  for (const [, child] of root.children) {
+    if (child.isBranch()) {
+      const branch = child as BranchNode;
+      const leafCount = countLeaves(branch);
+      const desc = branch.description.split(/[.\n]/)[0];
+      lines.push(`  ${child.name}/ (${leafCount} commands) — ${desc}`);
+    } else {
+      lines.push(`  ${child.name} — ${child.description.split(/[.\n]/)[0]}`);
     }
-    return lines;
   }
-  return [];
+  return lines;
+}
+
+function countLeaves(node: CLINode): number {
+  if (node instanceof LeafNode) return 1;
+  if (node.isBranch()) {
+    let count = 0;
+    for (const [, child] of (node as BranchNode).children) {
+      count += countLeaves(child);
+    }
+    return count;
+  }
+  return 0;
 }
 
 /**
  * Generate the Omni-Tool JSON schema to pass to any LLM API.
  * Optionally introspects a command tree to enrich the description with
- * available top-level modules.
+ * available top-level modules (branch names only — use `help` for details).
  */
 export function generateToolSchema(options?: SchemaOptions & { root?: BranchNode }): ToolSchema {
   let description = options?.description ?? DEFAULT_DESCRIPTION;
 
-  // Auto-generate command reference from tree if provided
   if (options?.root) {
-    const signatures: string[] = [];
-    for (const [, child] of options.root.children) {
-      signatures.push(...collectLeafSignatures(child, child.name));
+    const summaries = collectBranchSummaries(options.root);
+    if (summaries.length > 0) {
+      description += "\n\nModules:\n" + summaries.join("\n");
     }
-    if (signatures.length > 0) {
-      description += "\n\nCommands:\n" + signatures.join("\n");
-    }
-    description += "\n\nBuilt-in commands: help, cd, pwd, ls, tree, find, history.";
+    description += "\n\nUse `help <module>` to see available commands. Built-in: help, cd, pwd, ls, tree, find, history.";
   }
 
   return {

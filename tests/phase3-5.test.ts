@@ -100,7 +100,7 @@ describe("Schema auto-generation (E2)", () => {
     const schema = generateToolSchema({ root });
     expect(schema.description).toContain("database");
     expect(schema.description).toContain("files");
-    expect(schema.description).toContain("Built-in commands");
+    expect(schema.description).toContain("Built-in:");
   });
 });
 
