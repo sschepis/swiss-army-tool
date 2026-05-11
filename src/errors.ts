@@ -50,7 +50,7 @@ export class TooDeepError extends CLIError {
 
 export function formatError(errorType: string, hint: string, nodeName?: string): string {
   const tip = nodeName
-    ? `\nTip: Type 'help ${nodeName}' for usage instructions.`
-    : `\nTip: Run 'help' to see the main menu.`;
+    ? `\nTip: command="help ${nodeName}" for usage instructions.`
+    : `\nTip: command="help" to see the main menu.`;
   return `[ERROR: ${errorType}] ${hint}${tip}`;
 }

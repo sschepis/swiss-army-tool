@@ -115,7 +115,25 @@ export class LeafNode extends CLINode {
       }
     }
 
-    lines.push("", `Usage: command="${contextPath}", kwargs={...}`);
+    const allArgs = [...this.requiredArgs, ...this.optionalArgs];
+    const exampleKwargs: Record<string, string> = {};
+    for (const arg of allArgs) {
+      const desc = this.argDescriptors.get(arg);
+      if (this.requiredArgs.includes(arg)) {
+        exampleKwargs[arg] = desc?.description ? `<${desc.description}>` : `<${arg}>`;
+      } else {
+        exampleKwargs[arg] = desc?.default !== undefined
+          ? String(desc.default)
+          : desc?.description ? `<${desc.description}>` : `<${arg}>`;
+      }
+    }
+
+    lines.push("");
+    if (allArgs.length > 0) {
+      lines.push(`Usage: command="${contextPath}", kwargs=${JSON.stringify(exampleKwargs)}`);
+    } else {
+      lines.push(`Usage: command="${contextPath}"`);
+    }
 
     return lines.join("\n");
   }
@@ -144,10 +162,13 @@ export class LeafNode extends CLINode {
 
     const missing = this.requiredArgs.filter((arg) => !(arg in resolvedKwargs));
     if (missing.length > 0) {
-      const example = Object.fromEntries(this.requiredArgs.map((a) => [a, `<${a}>`]));
+      const example = Object.fromEntries(this.requiredArgs.map((a) => {
+        const desc = this.argDescriptors.get(a);
+        return [a, desc?.description ? `<${desc.description}>` : `<${a}>`];
+      }));
       return this.formatError(
         "MissingArguments",
-        `You are missing required arguments: ${missing.join(", ")}. Retry with kwargs=${JSON.stringify(example)}`,
+        `Missing required arguments: ${missing.join(", ")}.\n\nCorrect usage: command="${this.name}", kwargs=${JSON.stringify(example)}`,
       );
     }
 

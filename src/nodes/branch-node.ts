@@ -1,4 +1,5 @@
 import { CLINode } from "./cli-node.js";
+import { LeafNode } from "./leaf-node.js";
 import type { CLINodeConfig } from "../types.js";
 import { findClosestMatch } from "../utils/fuzzy.js";
 
@@ -54,7 +55,10 @@ export class BranchNode extends CLINode {
       const target = this.children.get(remaining[0]);
       if (!target) {
         const suggestion = findClosestMatch(remaining[0], [...this.children.keys()]);
-        const hint = suggestion ? `\nDid you mean: ${suggestion}?` : "";
+        const available = [...this.children.keys()].join(", ");
+        const hint = suggestion
+          ? `\nDid you mean: ${suggestion}?\nAvailable under '${this.name}': ${available}`
+          : `\nAvailable under '${this.name}': ${available}`;
         return this.formatError(
           "CommandNotFound",
           `'${remaining[0]}' is not recognized under '${this.name}'.${hint}`,
@@ -66,7 +70,28 @@ export class BranchNode extends CLINode {
     const child = this.children.get(next);
     if (!child) {
       const suggestion = findClosestMatch(next, [...this.children.keys()]);
-      const hint = suggestion ? `\nDid you mean: ${suggestion}?` : "";
+      let hint = "";
+      if (suggestion) {
+        const suggestedChild = this.children.get(suggestion)!;
+        hint = `\nDid you mean: ${suggestion}?`;
+        if (suggestedChild instanceof LeafNode) {
+          hint += `\n\nCorrect invocation:\n  command="${this.name}/${suggestion}"`;
+          if (suggestedChild.requiredArgs.length > 0) {
+            const example = Object.fromEntries(
+              suggestedChild.requiredArgs.map((a) => {
+                const desc = suggestedChild.argDescriptors.get(a);
+                return [a, desc?.description ? `<${desc.description}>` : `<${a}>`];
+              }),
+            );
+            hint += `, kwargs=${JSON.stringify(example)}`;
+          }
+        } else {
+          hint += `\n\nTry: command="${this.name}/${suggestion}" or command="help ${this.name}/${suggestion}"`;
+        }
+      } else {
+        const available = [...this.children.keys()].join(", ");
+        hint = `\nAvailable under '${this.name}': ${available}`;
+      }
       return this.formatError(
         "CommandNotFound",
         `'${next}' is not recognized under '${this.name}'.${hint}`,
@@ -80,15 +105,25 @@ export class BranchNode extends CLINode {
     const header = `=== ${this.name.toUpperCase()} MENU ===`;
     const lines: string[] = [header, this.description, "", "Available Options:"];
 
+    const path = contextPath || this.name;
+
     for (const [, child] of this.children) {
       const icon = child.isBranch() ? "\u{1F4C1}" : "\u26A1";
       lines.push(`  ${icon} ${child.name.padEnd(15)} : ${child.description}`);
+      if (child instanceof LeafNode && child.requiredArgs.length > 0) {
+        const example = Object.fromEntries(
+          child.requiredArgs.map((a) => {
+            const desc = child.argDescriptors.get(a);
+            return [a, desc?.description ? `<${desc.description}>` : `<${a}>`];
+          }),
+        );
+        lines.push(`${"".padEnd(20)}   \u21B3 command="${path}/${child.name}", kwargs=${JSON.stringify(example)}`);
+      }
     }
 
-    const path = contextPath || this.name;
     lines.push("");
-    lines.push(`Usage: command="${path} <option>"`);
-    lines.push(`Example: command="help ${path} <option>"`);
+    lines.push(`Usage: command="${path}/<option>", kwargs={...}`);
+    lines.push(`Help:  command="help ${path}/<option>"`);
 
     return lines.join("\n");
   }
